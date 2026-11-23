@@ -20,6 +20,7 @@ import NON_CORE_PLUGINS from '../gen/all_plugins';
 import CORE_PLUGINS from '../gen/all_core_plugins';
 import m from 'mithril';
 import {defer} from '../base/deferred';
+import {hasModKey} from '../base/hotkeys';
 import {addErrorHandler, reportError} from '../base/logging';
 import {featureFlags} from '../core/feature_flags';
 import {initLiveReload} from '../core/live_reload';
@@ -314,11 +315,12 @@ function main() {
   // Put debug variables in the global scope for better debugging.
   registerDebugGlobals();
 
-  // Prevent pinch zoom.
+  // Prevent pinch zoom, and keep the wheel from also scrolling what is under
+  // the pointer when it zooms the timeline (Ctrl, or Command on Mac).
   document.body.addEventListener(
     'wheel',
     (e: MouseEvent) => {
-      if (e.ctrlKey) e.preventDefault();
+      if (e.ctrlKey || hasModKey(e)) e.preventDefault();
     },
     {passive: false},
   );
