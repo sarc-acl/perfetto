@@ -20,7 +20,7 @@ import {drawIncompleteSlice} from '../../base/canvas_utils';
 import {cropText} from '../../base/string_utils';
 import {Color, HSLColor} from '../../base/color';
 import m from 'mithril';
-import {colorForThread} from '../../components/colorizer';
+import {colorForThread, makeColorScheme} from '../../components/colorizer';
 import {TrackData} from '../../components/tracks/track_data';
 import {TimelineFetcher} from '../../components/tracks/track_helper';
 import {checkerboardExcept} from '../../components/checkerboard';
@@ -54,9 +54,11 @@ const TRACK_HEIGHT = MARGIN_TOP * 2 + RECT_HEIGHT;
 // Header stroke is the thin top accent drawn above the body fill of a slice.
 const HEADER_STROKE_HEIGHT = 3;
 // Lightness offsets (in HSL percentage points) applied to the base palette
-// color to derive the selected (brightened) and "like case" (dimmed) fills.
+// color to derive the selected (brightened), "like case" (dimmed) fills and the
+// selected-slice outline.
 const SELECTED_LIGHTNESS = 60;
 const LIKE_CASE_LIGHTNESS = 30;
+const SELECTED_OUTLINE_LIGHTNESS = 30;
 // Default body color: grayish, so only selection or "like case" fills the slice
 // with its palette color.
 const GRAY_SLICE = new HSLColor([0, 0, 50]);
@@ -73,6 +75,9 @@ export class CpuSliceTrack implements TrackRenderer {
   // the "like case" dimming can be computed in the (synchronous) render loop.
   private selectedUtid?: number;
   private selectedPid?: bigint;
+  // Event id of the last resolved selection, so resolveSelectedEntity() only
+  // re-queries when the selection actually changes.
+  private lastSelectedEventId?: number;
   private fetcher = new TimelineFetcher<Data>(this.onBoundsChange.bind(this));
 
   private lastRowId = -1;
@@ -150,8 +155,16 @@ export class CpuSliceTrack implements TrackRenderer {
     if (selection.kind !== 'track_event') {
       this.selectedUtid = undefined;
       this.selectedPid = undefined;
+      // Invalidate the cache so re-selecting the same event later re-resolves.
+      this.lastSelectedEventId = undefined;
       return;
     }
+    // onUpdate awaits this on every render, so guard against an unchanged
+    // selection to avoid a trace_processor query per update.
+    if (selection.eventId === this.lastSelectedEventId) {
+      return;
+    }
+    this.lastSelectedEventId = selection.eventId;
     const res = await this.trace.engine.query(`
       SELECT s.utid FROM sched s WHERE s.id = ${selection.eventId}
     `);
@@ -443,11 +456,14 @@ export class CpuSliceTrack implements TrackRenderer {
       title = cropText(title, charWidth, visibleWidth);
       subTitle = cropText(subTitle, charWidth, visibleWidth);
       const rectXCenter = left + visibleWidth / 2;
-      // Labels are forced white to match the design system.
-      ctx.fillStyle = '#ffffff';
+      // Derive the label color from the slice body so it adapts to the fill
+      // (white on dark fills, dark on bright fills), matching the general slice
+      // path instead of forcing a single constant color.
+      const textColor = makeColorScheme(bodyColor).textBase;
+      ctx.fillStyle = textColor.cssString;
       ctx.font = '12px Roboto Condensed';
       ctx.fillText(title, rectXCenter, MARGIN_TOP + RECT_HEIGHT / 2 - 1);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.fillStyle = textColor.setAlpha(0.6).cssString;
       ctx.font = '10px Roboto Condensed';
       ctx.fillText(subTitle, rectXCenter, MARGIN_TOP + RECT_HEIGHT / 2 + 9);
     }
@@ -466,7 +482,9 @@ export class CpuSliceTrack implements TrackRenderer {
           const rectWidth = Math.max(1, rectEnd - rectStart);
 
           // Draw a rectangle around the slice that is currently selected.
-          ctx.strokeStyle = color.base.setHSL({l: 30}).cssString;
+          ctx.strokeStyle = color.base.setHSL({
+            l: SELECTED_OUTLINE_LIGHTNESS,
+          }).cssString;
           ctx.beginPath();
           ctx.lineWidth = 3;
           ctx.strokeRect(
