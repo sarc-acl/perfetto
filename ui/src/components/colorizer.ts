@@ -45,7 +45,10 @@ const USE_CONSISTENT_COLORS = featureFlags.register({
 
 const randColourState: RandState = {seed: 0};
 
-const MD_PALETTE_RAW: Color[] = [
+// The default material design palette that ships with Perfetto. Plugins may
+// replace this via setMDPalette(); the derived MD_PALETTE below is recomputed
+// accordingly so all consumers pick up the new colors.
+const DEFAULT_MD_PALETTE_RAW: Color[] = [
   new HSLColor({h: 4, s: 90, l: 58}),
   new HSLColor({h: 340, s: 82, l: 52}),
   new HSLColor({h: 291, s: 64, l: 42}),
@@ -70,19 +73,46 @@ export const WHITE_COLOR = new HSLColor([0, 0, 100]);
 export const BLACK_COLOR = new HSLColor([0, 0, 0]);
 export const GRAY_COLOR = new HSLColor([0, 0, 50]).setAlpha(0.5);
 
-const MD_PALETTE: ColorScheme[] = MD_PALETTE_RAW.map((color): ColorScheme => {
-  const base = color.desaturate(20);
-  const variant = base.desaturate(20).setAlpha(0.8);
+// Converts a raw list of colors into the base/variant color schemes consumed by
+// the rest of the UI. Exported so plugins and tests can build schemes directly.
+const toColorSchemes = (raw: Color[]): ColorScheme[] =>
+  raw.map((color): ColorScheme => {
+    const base = color.desaturate(20);
+    const variant = base.desaturate(20).setAlpha(0.8);
 
-  return {
-    base,
-    variant,
+    return {
+      base,
+      variant,
+      disabled: GRAY_COLOR,
+      textBase: WHITE_COLOR, // White text suits MD colors quite well
+      textVariant: WHITE_COLOR,
+      textDisabled: WHITE_COLOR.setAlpha(0.5), // Low contrast is on purpose
+    };
+  });
+
+// The raw palette actually in use. Overridable by plugins via setMDPalette.
+let MD_PALETTE_RAW: Color[] = DEFAULT_MD_PALETTE_RAW;
+
+// The color schemes derived from the active raw palette.
+let MD_PALETTE: ColorScheme[] = toColorSchemes(MD_PALETTE_RAW);
+
+// Allows a plugin to replace the raw palette with its own colors. The derived
+// schemes use each color as given (exact base, white labels), so a plugin
+// recolors thread/slice/cpu coloring with exactly the colors it specifies,
+// throughout the UI. The labels are intentionally always white to match the
+// design system; the default palette below keeps the softening desaturation
+// from toColorSchemes, so the out-of-the-box look is unchanged.
+export function setMDPalette(colors: Color[]): void {
+  MD_PALETTE_RAW = colors;
+  MD_PALETTE = colors.map((color) => ({
+    base: color,
+    variant: color.darken(15).saturate(15),
     disabled: GRAY_COLOR,
-    textBase: WHITE_COLOR, // White text suits MD colors quite well
+    textBase: WHITE_COLOR,
     textVariant: WHITE_COLOR,
-    textDisabled: WHITE_COLOR.setAlpha(0.5), // Low contrast is on purpose
-  };
-});
+    textDisabled: WHITE_COLOR.setAlpha(0.5),
+  }));
+}
 
 // Create a color scheme based on a single color, which defines the variant
 // color as a slightly darker and more saturated version of the base color.
