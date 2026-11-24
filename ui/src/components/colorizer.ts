@@ -97,21 +97,18 @@ let MD_PALETTE_RAW: Color[] = DEFAULT_MD_PALETTE_RAW;
 let MD_PALETTE: ColorScheme[] = toColorSchemes(MD_PALETTE_RAW);
 
 // Allows a plugin to replace the raw palette with its own colors. The derived
-// schemes use each color as given (exact base, white labels), so a plugin
-// recolors thread/slice/cpu coloring with exactly the colors it specifies,
-// throughout the UI. The labels are intentionally always white to match the
-// design system; the default palette below keeps the softening desaturation
-// from toColorSchemes, so the out-of-the-box look is unchanged.
+// schemes use each color as given (exact base), and their labels follow
+// Perfetto's adaptive contrast rule (white on dark colors, dark on bright
+// colors, per perceivedBrightness), so a plugin recolors thread/slice/cpu
+// coloring with exactly the colors it specifies while keeping the labels
+// legible. The default palette below keeps the softening desaturation from
+// toColorSchemes, so the out-of-the-box look is unchanged.
 export function setMDPalette(colors: Color[]): void {
   MD_PALETTE_RAW = colors;
-  MD_PALETTE = colors.map((color) => ({
-    base: color,
-    variant: color.darken(15).saturate(15),
-    disabled: GRAY_COLOR,
-    textBase: WHITE_COLOR,
-    textVariant: WHITE_COLOR,
-    textDisabled: WHITE_COLOR.setAlpha(0.5),
-  }));
+  // Reuse makeColorScheme so labels get adaptive text: white on dark colors and
+  // dark on bright colors (perceivedBrightness >= PERCEIVED_BRIGHTNESS_LIMIT),
+  // instead of the previously hardcoded white labels.
+  MD_PALETTE = colors.map((color) => makeColorScheme(color));
 }
 
 // Create a color scheme based on a single color, which defines the variant
