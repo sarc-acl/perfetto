@@ -20,12 +20,14 @@ import {drawIncompleteSlice} from '../../base/canvas_utils';
 import {cropText} from '../../base/string_utils';
 import {Color, HSLColor} from '../../base/color';
 import m from 'mithril';
+import {raf} from '../../core/raf_scheduler';
 import {colorForThread, makeColorScheme} from '../../components/colorizer';
 import {TrackData} from '../../components/tracks/track_data';
 import {TimelineFetcher} from '../../components/tracks/track_helper';
 import {checkerboardExcept} from '../../components/checkerboard';
 import {Point2D} from '../../base/geom';
 import {TrackRenderer} from '../../public/track';
+import {CPU_SLICE_TRACK_KIND} from '../../public/track_kinds';
 import {LONG, NUM} from '../../trace_processor/query_result';
 import {uuidv4Sql} from '../../base/uuid';
 import {TrackMouseEvent, TrackRenderContext} from '../../public/track';
@@ -70,7 +72,10 @@ export class CpuSliceTrack implements TrackRenderer {
   private mousePos?: Point2D;
   private utidHoveredInThisTrack?: number;
   private countHoveredInThisTrack?: number;
-  private hoveredSlice?: number;
+  // Slice id currently under the mouse. Compared by id (not a data index) in
+  // renderSlices() so the hover outline stays on the same slice when the
+  // fetcher replaces its data, e.g. on keyboard zoom or pan.
+  private hoveredSliceId?: number;
   // utid/pid of the currently selected slice, resolved asynchronously so that
   // the "like case" dimming can be computed in the (synchronous) render loop.
   private selectedUtid?: number;
@@ -148,14 +153,26 @@ export class CpuSliceTrack implements TrackRenderer {
   }
 
   // Resolves the utid/pid of the currently selected track event and caches it.
-  // A cpu_slice event id is a sched row id, so the utid can be looked up via
-  // the sched table regardless of which track triggered the selection.
+  // Only CPU slice tracks have sched row ids, so this is meaningful only when
+  // the selected track is itself a CPU slice track. Any other track numbers its
+  // own rows from 0, so its ids overlap sched's: a lookup would either highlight
+  // an unrelated process on the CPU tracks, or (past the end of sched) throw
+  // and freeze every CPU track until the trace is reopened.
   private async resolveSelectedEntity(): Promise<void> {
     const selection = this.trace.selection.selection;
-    if (selection.kind !== 'track_event') {
-      this.selectedUtid = undefined;
-      this.selectedPid = undefined;
-      // Invalidate the cache so re-selecting the same event later re-resolves.
+    const isCpuSliceSelected =
+      selection.kind === 'track_event' &&
+      this.trace.tracks
+        .getTrack(selection.trackUri)
+        ?.tags?.kinds?.includes(CPU_SLICE_TRACK_KIND);
+    if (!isCpuSliceSelected) {
+      if (this.selectedUtid !== undefined) {
+        // Clear the cache and schedule a redraw so the other CPU tracks drop
+        // the stale like-case dimming without waiting for the next refresh.
+        this.selectedUtid = undefined;
+        this.selectedPid = undefined;
+        raf.scheduleCanvasRedraw();
+      }
       this.lastSelectedEventId = undefined;
       return;
     }
@@ -168,9 +185,15 @@ export class CpuSliceTrack implements TrackRenderer {
     const res = await this.trace.engine.query(`
       SELECT s.utid FROM sched s WHERE s.id = ${selection.eventId}
     `);
-    const row = res.firstRow({utid: NUM});
-    this.selectedUtid = row.utid;
-    this.selectedPid = this.threads.get(row.utid)?.pid;
+    // maybeFirstRow, not firstRow: a valid CPU slice id always exists in sched,
+    // but never let a missing row throw and freeze the render loop.
+    const row = res.maybeFirstRow({utid: NUM});
+    this.selectedUtid = row?.utid;
+    this.selectedPid = row ? this.threads.get(row.utid)?.pid : undefined;
+    // selectedUtid/pid is read by every CPU track's render loop, so schedule a
+    // redraw to apply the new like-case without waiting for another refresh
+    // (TimelineFetcher does the same when its data arrives).
+    raf.scheduleCanvasRedraw();
   }
 
   async onBoundsChange(
@@ -362,7 +385,9 @@ export class CpuSliceTrack implements TrackRenderer {
       // eslint-disable-next-line @typescript-eslint/strict-boolean-expressions
       const pid = threadInfo && threadInfo.pid ? threadInfo.pid : -1n;
 
-      const isHovered = this.hoveredSlice === i;
+      const isHovered =
+        this.hoveredSliceId !== undefined &&
+        data.ids[i] === this.hoveredSliceId;
       const isSelectedSlice =
         sameTrackSelectedId !== undefined &&
         data.ids[i] === sameTrackSelectedId;
@@ -513,7 +538,7 @@ export class CpuSliceTrack implements TrackRenderer {
     const t = timescale.pxToHpTime(x);
     let hoveredUtid = undefined;
     let hoveredCount = undefined;
-    this.hoveredSlice = undefined;
+    this.hoveredSliceId = undefined;
 
     for (let i = 0; i < data.startQs.length; i++) {
       const tStart = Time.fromRaw(data.startQs[i]);
@@ -523,7 +548,7 @@ export class CpuSliceTrack implements TrackRenderer {
       if (t.gte(tStart) && t.lt(tEnd)) {
         hoveredUtid = utid;
         hoveredCount = count;
-        this.hoveredSlice = i;
+        this.hoveredSliceId = data.ids[i];
         break;
       }
     }
@@ -542,7 +567,7 @@ export class CpuSliceTrack implements TrackRenderer {
   onMouseOut() {
     this.utidHoveredInThisTrack = undefined;
     this.countHoveredInThisTrack = undefined;
-    this.hoveredSlice = undefined;
+    this.hoveredSliceId = undefined;
     this.trace.timeline.hoveredUtid = undefined;
     this.trace.timeline.hoveredPid = undefined;
     this.mousePos = undefined;
