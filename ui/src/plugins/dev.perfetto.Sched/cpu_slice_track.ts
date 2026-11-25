@@ -21,7 +21,11 @@ import {cropText} from '../../base/string_utils';
 import {Color, HSLColor} from '../../base/color';
 import m from 'mithril';
 import {raf} from '../../core/raf_scheduler';
-import {colorForThread, makeColorScheme} from '../../components/colorizer';
+import {
+  colorForThread,
+  makeColorScheme,
+  textColorFor,
+} from '../../components/colorizer';
 import {TrackData} from '../../components/tracks/track_data';
 import {TimelineFetcher} from '../../components/tracks/track_helper';
 import {checkerboardExcept} from '../../components/checkerboard';
@@ -64,6 +68,9 @@ const SELECTED_OUTLINE_LIGHTNESS = 30;
 // Default body color: grayish, so only selection or "like case" fills the slice
 // with its palette color.
 const GRAY_SLICE = new HSLColor([0, 0, 50]);
+
+// Label color for the default grayish body, computed once instead of per slice.
+const DEFAULT_SLICE_TEXT_COLOR = makeColorScheme(GRAY_SLICE).textBase;
 
 const CPU_SLICE_FLAGS_INCOMPLETE = 1;
 const CPU_SLICE_FLAGS_REALTIME = 2;
@@ -338,7 +345,10 @@ export class CpuSliceTrack implements TrackRenderer {
       currentSelection.trackUri === this.uri
     ) {
       sameTrackSelectedId = currentSelection.eventId;
-      const [startIndex, endIndex] = searchEq(data.ids, currentSelection.eventId);
+      const [startIndex, endIndex] = searchEq(
+        data.ids,
+        currentSelection.eventId,
+      );
       if (startIndex !== endIndex) {
         selectedUtid = data.utids[startIndex];
         selectedPid = this.threads.get(selectedUtid)?.pid;
@@ -393,8 +403,7 @@ export class CpuSliceTrack implements TrackRenderer {
         data.ids[i] === sameTrackSelectedId;
       const isLikeCase =
         selectedUtid !== undefined &&
-        (utid === selectedUtid ||
-          (typeof pid === 'bigint' && pid === selectedPid));
+        (utid === selectedUtid || pid === selectedPid);
 
       const colorScheme = colorForThread(threadInfo);
       // Default body is grayish; only selection or "like case" fills the slice
@@ -424,12 +433,13 @@ export class CpuSliceTrack implements TrackRenderer {
         );
       } else {
         ctx.fillRect(left, MARGIN_TOP, visibleWidth, RECT_HEIGHT);
-        // Default state: a colored top border. Skipped while hovering, when an
-        // outline is drawn around all sides instead.
-        if (isDefaultState && !isHovered) {
-          ctx.fillStyle = colorScheme.base.cssString;
-          ctx.fillRect(left, MARGIN_TOP, visibleWidth, HEADER_STROKE_HEIGHT);
-        }
+      }
+      // Default state: a colored top border, drawn for both complete and
+      // incomplete slices. Skipped while hovering, when an outline is drawn
+      // around all sides instead.
+      if (isDefaultState && !isHovered) {
+        ctx.fillStyle = colorScheme.base.cssString;
+        ctx.fillRect(left, MARGIN_TOP, visibleWidth, HEADER_STROKE_HEIGHT);
       }
 
       // Hovering singles out the slice with an outline around all sides.
@@ -484,7 +494,9 @@ export class CpuSliceTrack implements TrackRenderer {
       // Derive the label color from the slice body so it adapts to the fill
       // (white on dark fills, dark on bright fills), matching the general slice
       // path instead of forcing a single constant color.
-      const textColor = makeColorScheme(bodyColor).textBase;
+      const textColor = isDefaultState
+        ? DEFAULT_SLICE_TEXT_COLOR
+        : textColorFor(bodyColor);
       ctx.fillStyle = textColor.cssString;
       ctx.font = '12px Roboto Condensed';
       ctx.fillText(title, rectXCenter, MARGIN_TOP + RECT_HEIGHT / 2 - 1);
@@ -527,6 +539,9 @@ export class CpuSliceTrack implements TrackRenderer {
   onMouseMove({x, y, timescale}: TrackMouseEvent) {
     const data = this.fetcher.data;
     this.mousePos = {x, y};
+    // Reset before the early returns so hovering the margin above or below the
+    // slices still clears the hover outline, not just the tooltip.
+    this.hoveredSliceId = undefined;
     if (data === undefined) return;
     if (y < MARGIN_TOP || y > MARGIN_TOP + RECT_HEIGHT) {
       this.utidHoveredInThisTrack = undefined;
@@ -538,7 +553,6 @@ export class CpuSliceTrack implements TrackRenderer {
     const t = timescale.pxToHpTime(x);
     let hoveredUtid = undefined;
     let hoveredCount = undefined;
-    this.hoveredSliceId = undefined;
 
     for (let i = 0; i < data.startQs.length; i++) {
       const tStart = Time.fromRaw(data.startQs[i]);
@@ -580,7 +594,7 @@ export class CpuSliceTrack implements TrackRenderer {
     const index = search(data.startQs, time.toTime());
     const id = index === -1 ? undefined : data.ids[index];
     // eslint-disable-next-line @typescript-eslint/strict-boolean-expressions
-    if (!id || this.utidHoveredInThisTrack === -1) return false;
+    if (!id) return false;
 
     this.trace.selection.selectTrackEvent(this.uri, id);
     return true;
