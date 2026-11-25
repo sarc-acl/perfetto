@@ -17,6 +17,7 @@ import {hash} from '../base/hash';
 import {featureFlags} from '../core/feature_flags';
 import {Color, HSLColor, HSLuvColor} from '../base/color';
 import {ColorScheme} from '../base/color_scheme';
+import {assertTrue} from '../base/logging';
 import {RandState, pseudoRand} from '../base/rand';
 
 // 128 would provide equal weighting between dark and light text.
@@ -45,7 +46,10 @@ const USE_CONSISTENT_COLORS = featureFlags.register({
 
 const randColourState: RandState = {seed: 0};
 
-const MD_PALETTE_RAW: Color[] = [
+// The default material design palette that ships with Perfetto. Plugins may
+// replace this via setMDPalette(); the derived MD_PALETTE below is recomputed
+// accordingly so all consumers pick up the new colors.
+const DEFAULT_MD_PALETTE_RAW: Color[] = [
   new HSLColor({h: 4, s: 90, l: 58}),
   new HSLColor({h: 340, s: 82, l: 52}),
   new HSLColor({h: 291, s: 64, l: 42}),
@@ -70,19 +74,48 @@ export const WHITE_COLOR = new HSLColor([0, 0, 100]);
 export const BLACK_COLOR = new HSLColor([0, 0, 0]);
 export const GRAY_COLOR = new HSLColor([0, 0, 50]).setAlpha(0.5);
 
-const MD_PALETTE: ColorScheme[] = MD_PALETTE_RAW.map((color): ColorScheme => {
-  const base = color.desaturate(20);
-  const variant = base.desaturate(20).setAlpha(0.8);
+// Converts a raw list of colors into the base/variant color schemes consumed by
+// the rest of the UI.
+const toColorSchemes = (raw: Color[]): ColorScheme[] =>
+  raw.map((color): ColorScheme => {
+    const base = color.desaturate(20);
+    const variant = base.desaturate(20).setAlpha(0.8);
 
-  return {
-    base,
-    variant,
-    disabled: GRAY_COLOR,
-    textBase: WHITE_COLOR, // White text suits MD colors quite well
-    textVariant: WHITE_COLOR,
-    textDisabled: WHITE_COLOR.setAlpha(0.5), // Low contrast is on purpose
-  };
-});
+    return {
+      base,
+      variant,
+      disabled: GRAY_COLOR,
+      textBase: WHITE_COLOR, // White text suits MD colors quite well
+      textVariant: WHITE_COLOR,
+      textDisabled: WHITE_COLOR.setAlpha(0.5), // Low contrast is on purpose
+    };
+  });
+
+// The color schemes derived from the active raw palette.
+let MD_PALETTE: ColorScheme[] = toColorSchemes(DEFAULT_MD_PALETTE_RAW);
+
+// Allows a plugin to replace the palette with its own colors. The derived
+// schemes use each color as given (exact base), and their labels follow
+// Perfetto's adaptive contrast rule (white on dark colors, dark on bright
+// colors, per perceivedBrightness), so a plugin recolors thread/slice/cpu
+// coloring with exactly the colors it specifies while keeping the labels
+// legible. The default palette keeps the softening desaturation from
+// toColorSchemes, so the out-of-the-box look is unchanged.
+export function setMDPalette(colors: Color[]): void {
+  assertTrue(colors.length > 0, 'setMDPalette requires a non-empty palette');
+  // Reuse makeColorScheme so labels get adaptive text: white on dark colors and
+  // dark on bright colors (perceivedBrightness >= PERCEIVED_BRIGHTNESS_LIMIT),
+  // instead of the previously hardcoded white labels.
+  MD_PALETTE = colors.map((color) => makeColorScheme(color));
+}
+
+// Text color for a slice/thread body: dark text on bright bodies, white on dark
+// ones, matching the adaptive contrast used for labels.
+export function textColorFor(color: Color): Color {
+  return color.perceivedBrightness >= PERCEIVED_BRIGHTNESS_LIMIT
+    ? BLACK_COLOR
+    : WHITE_COLOR;
+}
 
 // Create a color scheme based on a single color, which defines the variant
 // color as a slightly darker and more saturated version of the base color.
